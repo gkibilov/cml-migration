@@ -9,11 +9,15 @@ import argparse
 parser = argparse.ArgumentParser(description="Export metadata/data for one Expression Set Definition & Version")
 parser.add_argument("--developerName", type=str, required=True, help="DeveloperName of the Expression Set Definition (e.g. ProductQualification)")
 parser.add_argument("--version", type=str, default="1", help="Version number (e.g. 1)")
+parser.add_argument("--orgAlias", type=str, default="srcOrg", help="Salesforce org alias (default: srcOrg)")
 args = parser.parse_args()
 
 dev_name = args.developerName.strip()
 version_num = args.version.strip()
 api_name_versioned = f"{dev_name}_V{version_num}"
+
+# single default source of truth
+alias = args.orgAlias.strip()
 
 # === API Version resolver helper ===
 def get_latest_api_version(instance_url):
@@ -35,10 +39,10 @@ def get_field_value(rec, field):
     return rec.get(field, "")
 
 # === Export CSV Helper ===
-def export_to_csv(query, filename, fields, alias="srcOrg"):
+def export_to_csv(query, filename, fields):
     print(f"📦 Exporting: {filename.replace('data/', '')}")
     print("🔍 SOQL Query:", query.strip())
-    
+
     try:
         result = subprocess.run(
             ["sf", "org", "display", "--target-org", alias, "--json"],
@@ -78,10 +82,10 @@ def export_to_csv(query, filename, fields, alias="srcOrg"):
             writer.writerow([get_field_value(rec, f) for f in fields])
 
     print(f"📄 Saved to {filename}\n")
-    
+
 
 # === Blob Download Helper ===
-def download_constraint_model_blobs(alias="srcOrg", input_csv="data/ExpressionSetDefinitionVersion.csv"):
+def download_constraint_model_blobs(input_csv="data/ExpressionSetDefinitionVersion.csv"):
     print("📥 Downloading ConstraintModel blobs...")
 
     try:
@@ -100,7 +104,7 @@ def download_constraint_model_blobs(alias="srcOrg", input_csv="data/ExpressionSe
         print(e)
         return
 
-    headers = { "Authorization": f"Bearer {access_token}" }
+    headers = {"Authorization": f"Bearer {access_token}"}
     os.makedirs("data/blobs", exist_ok=True)
 
     with open(input_csv, newline='') as f:
@@ -128,7 +132,7 @@ def download_constraint_model_blobs(alias="srcOrg", input_csv="data/ExpressionSe
                 print(f"✅ Saved blob: {file_path}")
             else:
                 print(f"❌ Failed to fetch blob: {resp.status_code} - {resp.text}")
-                
+
 # === Filtering Helper ===
 def get_reference_ids_by_prefix(filename, prefix):
     ids = set()
