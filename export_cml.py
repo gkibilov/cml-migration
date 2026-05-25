@@ -156,7 +156,7 @@ export_to_csv(
                MasterLabel, Status, VersionNumber
         FROM ExpressionSetDefinitionVersion
         WHERE ExpressionSetDefinition.DeveloperName = '{dev_name}'
-          AND VersionNumber = {version_num}
+        AND VersionNumber = {version_num}
     """,
     filename="data/ExpressionSetDefinitionVersion.csv",
     fields=[
@@ -215,11 +215,17 @@ def build_id_query(obj_name, ids):
     joined = ",".join(f"'{x}'" for x in ids)
     return f"SELECT Id, Name FROM {obj_name} WHERE Id IN ({joined})"
 
+def build_product2_query(ids):
+    if not ids:
+        return "SELECT Id, Name, ProductCode FROM Product2 WHERE Id = '000000000000000AAA'"  # dummy no-match
+    joined = ",".join(f"'{x}'" for x in ids)
+    return f"SELECT Id, Name, ProductCode FROM Product2 WHERE Id IN ({joined})"
+
 # Export referenced Product2
 export_to_csv(
-    query=build_id_query("Product2", product_ids),
+    query=build_product2_query(product_ids),
     filename="data/Product2.csv",
-    fields=["Id", "Name"]
+    fields=["Id", "Name", "ProductCode"]
 )
 
 # Export referenced ProductClassification
@@ -233,8 +239,8 @@ export_to_csv(
 export_to_csv(
     query="""
         SELECT Id, Name,
-               ParentProductId, ParentProduct.Name,
-               ChildProductId, ChildProduct.Name,
+               ParentProductId, ParentProduct.Name, ParentProduct.ProductCode,
+               ChildProductId, ChildProduct.Name, ChildProduct.ProductCode,
                ChildProductClassificationId, ChildProductClassification.Name,
                ProductRelationshipTypeId, ProductRelationshipType.Name, Sequence
         FROM ProductRelatedComponent
@@ -243,8 +249,8 @@ export_to_csv(
     filename="data/ProductRelatedComponent.csv",
     fields=[
         "Id", "Name",
-        "ParentProductId", "ParentProduct.Name",
-        "ChildProductId", "ChildProduct.Name",
+        "ParentProductId", "ParentProduct.Name", "ParentProduct.ProductCode",
+        "ChildProductId", "ChildProduct.Name", "ChildProduct.ProductCode",
         "ChildProductClassificationId", "ChildProductClassification.Name",
         "ProductRelationshipTypeId", "ProductRelationshipType.Name","Sequence"
     ]
