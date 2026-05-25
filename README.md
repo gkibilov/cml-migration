@@ -23,6 +23,13 @@ Exports CSVs and blob files into the `data/` folder.
 
 ---
 
+#### 🔧 Change CML API Name (optional)
+```bash
+python rename_cml_api_name.py --from-name Laptop_Pro_Bundle --to-name Laptop_Pro_Bundle_V1
+```
+Renames CML API name in case target already has the original name and you want to preserve it
+---
+
 #### 📥 Import into Target Org
 
 ```bash

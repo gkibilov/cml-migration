@@ -37,6 +37,60 @@ def read_csv(filename):
     with open(os.path.join(DATA_DIR, filename), newline="") as f:
         return list(csv.DictReader(f))
 
+def chunks(items, size=100):
+    """Yield deterministic, non-empty chunks from an iterable."""
+    clean_items = sorted({str(item).strip() for item in items if item is not None and str(item).strip()})
+    for i in range(0, len(clean_items), size):
+        yield clean_items[i:i + size]
+
+def soql_quote(value):
+    """Quote and escape a value for use inside a SOQL IN list."""
+    escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
+
+def soql_in_list(values):
+    return ",".join(soql_quote(value) for value in values)
+
+def query_all_records(query_url, soql):
+    """Run a SOQL query and follow nextRecordsUrl if Salesforce paginates results."""
+    records = []
+
+    resp = requests.get(query_url, headers=headers, params={"q": soql})
+    if resp.status_code != 200:
+        print(f"❌ Query failed: {resp.status_code} - {resp.text}")
+        print("SOQL:", soql.strip())
+        return records
+
+    payload = resp.json()
+    records.extend(payload.get("records", []))
+
+    while not payload.get("done", True) and payload.get("nextRecordsUrl"):
+        next_url = instance_url + payload["nextRecordsUrl"]
+        resp = requests.get(next_url, headers=headers)
+        if resp.status_code != 200:
+            print(f"❌ QueryMore failed: {resp.status_code} - {resp.text}")
+            break
+
+        payload = resp.json()
+        records.extend(payload.get("records", []))
+
+    return records
+
+def query_in_chunks(query_url, values, build_soql, label, chunk_size=100):
+    """Run the same logical IN query in smaller batches to avoid 414 URI Too Long."""
+    all_records = []
+    batches = list(chunks(values, chunk_size))
+
+    if not batches:
+        print(f"ℹ️ No {label} values to query.")
+        return all_records
+
+    for idx, batch in enumerate(batches, start=1):
+        print(f"📡 Querying {label} batch {idx}/{len(batches)} ({len(batch)} values)")
+        all_records.extend(query_all_records(query_url, build_soql(batch)))
+
+    return all_records
+
 # === REST: POST ===
 def create_record(obj_name, record, access_token, instance_url, api_version):
     url = f"{instance_url}/services/data/v{api_version}/sobjects/{obj_name}/"
@@ -263,29 +317,42 @@ def main():
     headers = {"Authorization": f"Bearer {access_token}"}
     query_url = f"{instance_url}/services/data/v{api_version}/query"
 
-    # Query target org for Product2
-    prod_filter = ",".join(f"'{c}'" for c in product_codes)
-    q1 = f"SELECT Id, Name, ProductCode FROM Product2 WHERE ProductCode IN ({prod_filter})"
-    resp1 = requests.get(query_url, headers=headers, params={"q": q1})
-    uk_to_targetId_prod = {r["ProductCode"]: r["Id"] for r in resp1.json().get("records", [])}
+    # Query target org for Product2 in chunks to avoid 414 URI Too Long
+    prod_records = query_in_chunks(
+        query_url=query_url,
+        values=product_codes,
+        label="Product2 ProductCode",
+        build_soql=lambda batch: (
+            "SELECT Id, Name, ProductCode "
+            f"FROM Product2 WHERE ProductCode IN ({soql_in_list(batch)})"
+        )
+    )
+    uk_to_targetId_prod = {r["ProductCode"]: r["Id"] for r in prod_records}
 
-    # Query target org for ProductClassification
-    uk_to_targetId_class = {}
-    if classification_names:
-        class_filter = ",".join(f"'{n}'" for n in classification_names)
-        q2 = f"SELECT Id, Name FROM ProductClassification WHERE Name IN ({class_filter})"
-        resp2 = requests.get(query_url, headers=headers, params={"q": q2})
-        uk_to_targetId_class = {r["Name"]: r["Id"] for r in resp2.json().get("records", [])}
+    # Query target org for ProductClassification in chunks to avoid 414 URI Too Long
+    class_records = query_in_chunks(
+        query_url=query_url,
+        values=classification_names,
+        label="ProductClassification Name",
+        build_soql=lambda batch: (
+            "SELECT Id, Name "
+            f"FROM ProductClassification WHERE Name IN ({soql_in_list(batch)})"
+        )
+    )
+    uk_to_targetId_class = {r["Name"]: r["Id"] for r in class_records}
 
-    # Query target org for ProductRelatedComponent
-    prc_filter = ",".join(f"'{c}'" for c in prc_parent_codes)
-    q3 = f"""
-        SELECT Id, ParentProduct.ProductCode, ChildProduct.ProductCode,
-               ChildProductClassification.Name, ProductRelationshipType.Name, Sequence
-        FROM ProductRelatedComponent
-        WHERE ParentProduct.ProductCode IN ({prc_filter})
-    """
-    resp3 = requests.get(query_url, headers=headers, params={"q": q3})
+    # Query target org for ProductRelatedComponent in chunks to avoid 414 URI Too Long
+    prc_records = query_in_chunks(
+        query_url=query_url,
+        values=prc_parent_codes,
+        label="ProductRelatedComponent ParentProduct.ProductCode",
+        build_soql=lambda batch: f"""
+            SELECT Id, ParentProduct.ProductCode, ChildProduct.ProductCode,
+                   ChildProductClassification.Name, ProductRelationshipType.Name, Sequence
+            FROM ProductRelatedComponent
+            WHERE ParentProduct.ProductCode IN ({soql_in_list(batch)})
+        """
+    )
     uk_to_targetId_prc = {
         (
             r["ParentProduct"]["ProductCode"] + "|" +
@@ -294,7 +361,7 @@ def main():
             (r["ProductRelationshipType"]["Name"] if r.get("ProductRelationshipType") else "") + "|" +
             (str(r["Sequence"]) if r.get("Sequence") is not None else "")
         ): r["Id"]
-        for r in resp3.json().get("records", [])
+        for r in prc_records
         if r.get("ParentProduct")
     }
 

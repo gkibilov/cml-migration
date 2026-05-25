@@ -145,7 +145,84 @@ def get_reference_ids_by_prefix(filename, prefix):
                     ids.add(ref_id)
     except Exception as e:
         print(f"❌ Could not process {filename} for prefix {prefix}: {e}")
-    return list(ids)
+    return sorted(ids)
+
+
+# === Chunked Export Helpers ===
+def chunks(items, size):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def get_org_connection():
+    try:
+        result = subprocess.run(
+            ["sf", "org", "display", "--target-org", alias, "--json"],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        org_info = json.loads(result.stdout)["result"]
+        access_token = org_info["accessToken"]
+        instance_url = org_info["instanceUrl"]
+        api_version = get_latest_api_version(instance_url)
+        endpoint = f"{instance_url}/services/data/v{api_version}/query"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        return endpoint, headers
+    except Exception as e:
+        print("❌ Failed to retrieve org info from Salesforce CLI.")
+        print(e)
+        return None, None
+
+
+def export_ids_to_csv(obj_name, ids, select_clause, filename, fields, chunk_size=100):
+    print(f"📦 Exporting: {filename.replace('data/', '')}")
+
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    with open(filename, mode="w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(fields)
+
+    if not ids:
+        print(f"✅ 0 records fetched for {filename}")
+        print(f"📄 Saved to {filename}\n")
+        return
+
+    endpoint, headers = get_org_connection()
+    if not endpoint:
+        return
+
+    total_records = 0
+    total_batches = ((len(ids) - 1) // chunk_size) + 1
+
+    for batch_num, batch in enumerate(chunks(ids, chunk_size), start=1):
+        joined = ",".join(f"'{x}'" for x in batch)
+        query = f"""
+            SELECT {select_clause}
+            FROM {obj_name}
+            WHERE Id IN ({joined})
+        """
+
+        print(f"🔍 {obj_name} batch {batch_num}/{total_batches}: {len(batch)} ids")
+        response = requests.get(endpoint, headers=headers, params={"q": query})
+        if response.status_code != 200:
+            print(f"❌ API Error ({filename}, batch {batch_num}): {response.status_code}")
+            print(response.text)
+            continue
+
+        records = response.json().get("records", [])
+        total_records += len(records)
+
+        with open(filename, mode="a", newline="") as file:
+            writer = csv.writer(file)
+            for rec in records:
+                writer.writerow([get_field_value(rec, f) for f in fields])
+
+    print(f"✅ {total_records} records fetched for {filename}")
+    print(f"📄 Saved to {filename}\n")
 
 
 # === Begin Export Tasks ===
@@ -209,50 +286,42 @@ product_ids = get_reference_ids_by_prefix("data/ExpressionSetConstraintObj.csv",
 classification_ids = get_reference_ids_by_prefix("data/ExpressionSetConstraintObj.csv", "11B")
 component_ids = get_reference_ids_by_prefix("data/ExpressionSetConstraintObj.csv", "0dS")
 
-def build_id_query(obj_name, ids):
-    if not ids:
-        return f"SELECT Id, Name FROM {obj_name} WHERE Id = '000000000000000AAA'"  # dummy no-match
-    joined = ",".join(f"'{x}'" for x in ids)
-    return f"SELECT Id, Name FROM {obj_name} WHERE Id IN ({joined})"
-
-def build_product2_query(ids):
-    if not ids:
-        return "SELECT Id, Name, ProductCode FROM Product2 WHERE Id = '000000000000000AAA'"  # dummy no-match
-    joined = ",".join(f"'{x}'" for x in ids)
-    return f"SELECT Id, Name, ProductCode FROM Product2 WHERE Id IN ({joined})"
-
-# Export referenced Product2
-export_to_csv(
-    query=build_product2_query(product_ids),
+# Export referenced Product2 in chunks to avoid 414 URI Too Long
+export_ids_to_csv(
+    obj_name="Product2",
+    ids=product_ids,
+    select_clause="Id, Name, ProductCode",
     filename="data/Product2.csv",
     fields=["Id", "Name", "ProductCode"]
 )
 
-# Export referenced ProductClassification
-export_to_csv(
-    query=build_id_query("ProductClassification", classification_ids),
+# Export referenced ProductClassification in chunks to avoid 414 URI Too Long
+export_ids_to_csv(
+    obj_name="ProductClassification",
+    ids=classification_ids,
+    select_clause="Id, Name",
     filename="data/ProductClassification.csv",
     fields=["Id", "Name"]
 )
 
-# Export referenced ProductRelatedComponent
-export_to_csv(
-    query="""
-        SELECT Id, Name,
-               ParentProductId, ParentProduct.Name, ParentProduct.ProductCode,
-               ChildProductId, ChildProduct.Name, ChildProduct.ProductCode,
-               ChildProductClassificationId, ChildProductClassification.Name,
-               ProductRelationshipTypeId, ProductRelationshipType.Name, Sequence
-        FROM ProductRelatedComponent
-        WHERE Id IN (%s)
-    """ % ",".join(f"'{i}'" for i in component_ids) if component_ids else "SELECT Id, Name FROM ProductRelatedComponent WHERE Id = '000000000000000AAA'",
+# Export referenced ProductRelatedComponent in chunks to avoid 414 URI Too Long
+export_ids_to_csv(
+    obj_name="ProductRelatedComponent",
+    ids=component_ids,
+    select_clause="""
+        Id, Name,
+        ParentProductId, ParentProduct.Name, ParentProduct.ProductCode,
+        ChildProductId, ChildProduct.Name, ChildProduct.ProductCode,
+        ChildProductClassificationId, ChildProductClassification.Name,
+        ProductRelationshipTypeId, ProductRelationshipType.Name, Sequence
+    """,
     filename="data/ProductRelatedComponent.csv",
     fields=[
         "Id", "Name",
         "ParentProductId", "ParentProduct.Name", "ParentProduct.ProductCode",
         "ChildProductId", "ChildProduct.Name", "ChildProduct.ProductCode",
         "ChildProductClassificationId", "ChildProductClassification.Name",
-        "ProductRelationshipTypeId", "ProductRelationshipType.Name","Sequence"
+        "ProductRelationshipTypeId", "ProductRelationshipType.Name", "Sequence"
     ]
 )
 
