@@ -71,7 +71,18 @@ def export_to_csv(query, filename, fields):
         print(response.text)
         return
 
-    records = response.json().get("records", [])
+    payload = response.json()
+    records = payload.get("records", [])
+    while not payload.get("done", True) and payload.get("nextRecordsUrl"):
+        next_url = instance_url + payload["nextRecordsUrl"]
+        response = requests.get(next_url, headers=headers)
+        if response.status_code != 200:
+            print(f"❌ API Error ({filename}) while fetching next page: {response.status_code}")
+            print(response.text)
+            return
+        payload = response.json()
+        records.extend(payload.get("records", []))
+
     print(f"✅ {len(records)} records fetched for {filename}")
 
     os.makedirs(os.path.dirname(filename), exist_ok=True)
